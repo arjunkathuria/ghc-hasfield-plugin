@@ -15,16 +15,16 @@
 module Data.Record.Plugin.Shim (
     -- * Miscellaneous
     importDecl
-  , conPat
-  , mkFunBind
+--  , conPat
+--  , mkFunBind
   , HsModule
   , LHsModule
   , LRdrName
   , pattern GHC.HsModule
-  , putLogMsg
+  -- , putLogMsg
   , patLoc
   , viewConPat
-
+  , mkSrcSpanAnn
     -- * Extensions
   , HasDefaultExt(..)
 
@@ -34,10 +34,10 @@ module Data.Record.Plugin.Shim (
   , LHsTyVarBndr
 #endif
   , hsFunTy
-  , userTyVar
-  , kindedTyVar
-  , hsTyVarLName
-  , setDefaultSpecificity
+--  , userTyVar
+--  , kindedTyVar
+--  , hsTyVarLName
+--  , setDefaultSpecificity
 
     -- * Re-exports
 
@@ -58,9 +58,16 @@ module Data.Record.Plugin.Shim (
   , module GHC.Hs
   , module GHC.Plugins
   , module GHC.Tc.Types.Evidence
-  , module GHC.Types.Basic
   , module GHC.Types.Name.Cache
   , module GHC.Utils.Error
+#endif
+
+#if __GLASGOW_HASKELL__ >= 902
+  , module GHC.Types.SourceText
+  , module GHC.Driver.Errors
+  , module GHC.Utils.Logger
+#elif __GLASGOW_HASKELL__ >= 900
+  , module GHC.Types.Basic
 #endif
   ) where
 
@@ -73,7 +80,6 @@ import qualified Data.List.NonEmpty as NE
 import Bag (listToBag, emptyBag)
 import BasicTypes (SourceText(NoSourceText))
 import ConLike (ConLike)
-import ErrUtils (mkErrMsg, mkWarnMsg)
 import GHC hiding (AnnKeywordId(..), HsModule, exprType, typeKind, mkFunBind)
 import GhcPlugins hiding ((<>), getHscEnv, putLogMsg)
 import HscMain (getHscEnv)
@@ -91,17 +97,26 @@ import GHC.Core.ConLike (ConLike)
 import GHC.Core.PatSyn (PatSyn)
 import GHC.Data.Bag (listToBag, emptyBag)
 import GHC.Driver.Main (getHscEnv)
-import GHC.Hs hiding (LHsTyVarBndr, HsTyVarBndr, HsModule, mkFunBind)
+import GHC.Hs hiding (LHsTyVarBndr, HsTyVarBndr, HsModule, mkFunBind, AnnType, AnnRec, AnnLet, AnnLam, AnnCase)
 import GHC.Parser.Annotation (IsUnicodeSyntax(NormalSyntax))
 import GHC.Plugins hiding ((<>), getHscEnv, putLogMsg)
 import GHC.Tc.Types.Evidence (HsWrapper(WpHole))
-import GHC.Types.Basic (SourceText(NoSourceText))
 import GHC.Types.Name.Cache (NameCache(nsUniqs))
-import GHC.Utils.Error (Severity(SevError, SevWarning), mkErrMsg, mkWarnMsg)
+import GHC.Utils.Error (Severity(SevError, SevWarning), mkWarnMsg)
 
 import qualified GHC.Hs      as GHC
-import qualified GHC.Plugins as GHC
+import qualified GHC.Plugins as GHC 
 
+#endif
+
+-- GHC 9.2 changes
+#if __GLASGOW_HASKELL__ >= 902
+import GHC.Types.SourceText (SourceText(NoSourceText))
+import GHC.Driver.Errors (printOrThrowWarnings)
+import GHC.Utils.Logger (getLogger)
+#elif __GLASGOW_HASKELL__ > 900 && __GLASGOW_HASKELL__ < 902
+import GHC.Types.Basic (SourceText(NoSourceText))
+import qualified GHC.Driver.Session as GHC (putLogMsg)
 #endif
 
 {-------------------------------------------------------------------------------
@@ -110,10 +125,10 @@ import qualified GHC.Plugins as GHC
 
 -- | Optionally @qualified@ import declaration
 importDecl :: ModuleName -> Bool -> LImportDecl GhcPs
-importDecl name qualified = noLoc $ ImportDecl {
-      ideclExt       = defExt
+importDecl name qualified = noLocA $ ImportDecl {
+      ideclExt       = noAnn
     , ideclSourceSrc = NoSourceText
-    , ideclName      = noLoc name
+    , ideclName      = noLocA name
     , ideclPkgQual   = Nothing
     , ideclSafe      = False
     , ideclImplicit  = False
@@ -131,19 +146,19 @@ importDecl name qualified = noLoc $ ImportDecl {
 #endif
     }
 
-conPat :: Located RdrName -> HsConPatDetails GhcPs -> Pat GhcPs
-#if __GLASGOW_HASKELL__ < 900
-conPat x y = ConPatIn x y
-#else
-conPat x y = ConPat noExtField x y
-#endif
+-- conPat :: Located RdrName -> HsConPatDetails GhcPs -> Pat GhcPs
+-- #if __GLASGOW_HASKELL__ < 900
+-- conPat x y = ConPatIn x y
+-- #else
+-- conPat x y = ConPat noAnn x y
+-- #endif
 
-mkFunBind :: Located RdrName -> [LMatch GhcPs (LHsExpr GhcPs)] -> HsBind GhcPs
-#if __GLASGOW_HASKELL__ < 810
-mkFunBind = GHC.mkFunBind
-#else
-mkFunBind = GHC.mkFunBind Generated
-#endif
+-- mkFunBind :: Located RdrName -> [LMatch GhcPs (LHsExpr GhcPs)] -> HsBind GhcPs
+-- #if __GLASGOW_HASKELL__ < 810
+-- mkFunBind = GHC.mkFunBind
+-- #else
+-- mkFunBind = GHC.mkFunBind Generated
+-- #endif
 
 #if __GLASGOW_HASKELL__ < 900
 type HsModule = GHC.HsModule GhcPs
@@ -154,11 +169,11 @@ type HsModule = GHC.HsModule
 type LHsModule = Located HsModule
 type LRdrName  = Located RdrName
 
-putLogMsg :: DynFlags -> WarnReason -> Severity -> SrcSpan -> SDoc -> IO ()
 #if __GLASGOW_HASKELL__ < 900
+putLogMsg :: DynFlags -> WarnReason -> Severity -> SrcSpan -> SDoc -> IO ()
 putLogMsg flags reason sev srcspan =
     GHC.putLogMsg flags reason sev srcspan (defaultErrStyle flags)
-#else
+#elif __GLASGOW_HASKELL__ > 900 && __GLASGOW_HASKELL__ < 902
 putLogMsg = GHC.putLogMsg
 #endif
 
@@ -198,52 +213,56 @@ hsFunTy = HsFunTy
 hsFunTy ext = HsFunTy ext (HsUnrestrictedArrow NormalSyntax)
 #endif
 
-userTyVar ::
-     XUserTyVar pass
-  -> Located (IdP pass)
-  -> HsTyVarBndr pass
-#if __GLASGOW_HASKELL__ < 900
-userTyVar = UserTyVar
-#else
-userTyVar ext = UserTyVar ext ()
-#endif
+-- userTyVar ::
+--      XUserTyVar pass
+--   -> Located (IdP pass)
+--   -> HsTyVarBndr pass
+-- #if __GLASGOW_HASKELL__ < 900
+-- userTyVar = UserTyVar
+-- #else
+-- userTyVar ext = UserTyVar ext ()
+-- #endif
 
-kindedTyVar ::
-     XKindedTyVar pass
-  -> Located (IdP pass)
-  -> LHsKind pass
-  -> HsTyVarBndr pass
-#if __GLASGOW_HASKELL__ < 900
-kindedTyVar = KindedTyVar
-#else
-kindedTyVar ext = KindedTyVar ext ()
-#endif
+-- kindedTyVar ::
+--      XKindedTyVar pass
+--   -> Located (IdP pass)
+--   -> LHsKind pass
+--   -> HsTyVarBndr pass
+-- #if __GLASGOW_HASKELL__ < 900
+-- kindedTyVar = KindedTyVar
+-- #else
+-- kindedTyVar ext = KindedTyVar ext ()
+-- #endif
 
 -- | Like 'hsTyVarName', but don't throw away the location information
-hsTyVarLName :: HsTyVarBndr GhcPs -> LRdrName
-#if __GLASGOW_HASKELL__ < 900
-hsTyVarLName (UserTyVar   _ n  ) = n
-hsTyVarLName (KindedTyVar _ n _) = n
-hsTyVarLName _ = panic "hsTyVarLName"
-#else
-hsTyVarLName (UserTyVar   _ _ n  ) = n
-hsTyVarLName (KindedTyVar _ _ n _) = n
-#endif
+-- hsTyVarLName :: HsTyVarBndr GhcPs -> LRdrName
+-- #if __GLASGOW_HASKELL__ < 900
+-- hsTyVarLName (UserTyVar   _ n  ) = n
+-- hsTyVarLName (KindedTyVar _ n _) = n
+-- hsTyVarLName _ = panic "hsTyVarLName"
+-- #else
+-- hsTyVarLName (UserTyVar   _ _ n  ) = n
+-- hsTyVarLName (KindedTyVar _ _ n _) = n
+-- #endif
 
-#if __GLASGOW_HASKELL__ < 900
-setDefaultSpecificity :: LHsTyVarBndr pass -> GHC.LHsTyVarBndr pass
-setDefaultSpecificity = id
-#else
-setDefaultSpecificity :: LHsTyVarBndr pass -> GHC.LHsTyVarBndr Specificity pass
-setDefaultSpecificity (L l v) = L l $ case v of
-    UserTyVar   ext () name      -> UserTyVar   ext SpecifiedSpec name
-    KindedTyVar ext () name kind -> KindedTyVar ext SpecifiedSpec name kind
-    XTyVarBndr  ext              -> XTyVarBndr  ext
-#endif
+-- #if __GLASGOW_HASKELL__ < 900
+-- setDefaultSpecificity :: LHsTyVarBndr pass -> GHC.LHsTyVarBndr pass
+-- setDefaultSpecificity = id
+-- #else
+-- setDefaultSpecificity :: LHsTyVarBndr pass -> GHC.LHsTyVarBndr Specificity pass
+-- setDefaultSpecificity (L l v) = L l $ case v of
+--     UserTyVar   ext () name      -> UserTyVar   ext SpecifiedSpec name
+--     KindedTyVar ext () name kind -> KindedTyVar ext SpecifiedSpec name kind
+--     XTyVarBndr  ext              -> XTyVarBndr  ext
+-- #endif
+
+mkSrcSpanAnn :: SrcSpan -> SrcSpanAnnA
+mkSrcSpanAnn l = SrcSpanAnn EpAnnNotUsed l
 
 patLoc :: SrcSpan -> Pat (GhcPass id) -> LPat (GhcPass id)
 #if __GLASGOW_HASKELL__ >= 810 && __GLASGOW_HASKELL__ <= 920
-patLoc l p = L l p
+patLoc l p = L l' p
+  where l' = mkSrcSpanAnn l
 #else
 patLoc _ p = p
 #endif
@@ -255,7 +274,7 @@ viewConPat (ConPatIn a b) = Just (a, b)
 viewConPat :: LPat (GhcPass id) -> Maybe (Located (IdP (GhcPass id)), HsConPatDetails (GhcPass id))
 viewConPat (L _ (ConPatIn a b)) = Just (a, b)
 #elif __GLASGOW_HASKELL__ >= 900
-viewConPat :: LPat (GhcPass id) -> Maybe (Located (ConLikeP (GhcPass id)), HsConPatDetails (GhcPass id))
+viewConPat :: LPat (GhcPass id) -> Maybe (XRec (GhcPass id) (ConLikeP (GhcPass id)), HsConPatDetails (GhcPass id))
 viewConPat (L _ (ConPat _ext a b)) = Just (a, b)
 #endif
 viewConPat _ = Nothing

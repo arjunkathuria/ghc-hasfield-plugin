@@ -11,12 +11,12 @@ library
   other-modules:
       Data.Record.Plugin.Shim
   build-depends:
-      base             >= 4.13   && < 4.17
-    , containers       >= 0.6.2  && < 0.7
-    , mtl              >= 2.2.1  && < 2.3
+      base
+    , containers
+    , mtl
     , transformers
-    , primitive        >= 0.7    && < 0.8
-    , uniplate 
+    , primitive
+    , uniplate
     , ghc
     , template-haskell
 
@@ -33,8 +33,8 @@ test-suite test
       TestTypes
       Unused
   build-depends:
-      base             >= 4.13   && < 4.17
-    , record-hasfield  >= 1.0    && < 1.1
+      base
+    , record-hasfield
     , tasty
     , tasty-hunit
     , record-dot-preprocessor
